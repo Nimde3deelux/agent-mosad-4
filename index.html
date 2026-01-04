@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>AGENT DU MOSSAD 4 – FPS 3D</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    #crosshair {
+      position: fixed; top: 50%; left: 50%;
+      width: 10px; height: 10px;
+      margin-left: -5px; margin-top: -5px;
+      border: 2px solid #fff; border-radius: 50%;
+      pointer-events: none; z-index: 10;
+    }
+    #hud {
+      position: fixed; top: 10px; left: 10px;
+      color: #fff; font-family: sans-serif; z-index: 10;
+    }
+    #bossBar {
+      position: fixed; top: 20px; right: 20px;
+      width: 200px; height: 14px;
+      border: 1px solid #fff; background: #400;
+      display: none; z-index: 10;
+    }
+    #bossBarFill {
+      width: 100%; height: 100%; background: #0f0;
+    }
+    #overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      color: #fff; z-index: 20;
+      font-family: sans-serif;
+    }
+    .btn {
+      padding: 10px 20px; border: 1px solid #fff;
+      background: #222; cursor: pointer;
+      margin-top: 20px; text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .btn:hover { background: #444; }
+  </style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>AGENT DU MOSSAD 4</h1>
+  <p>FPS 3D — ZQSD pour bouger — Souris pour viser — Clic gauche pour tirer</p>
+  <button class="btn" id="startBtn">Commencer</button>
+</div>
+
+<div id="crosshair"></div>
+<div id="hud">VIE : <span id="hpText">100</span></div>
+<div id="bossBar"><div id="bossBarFill"></div></div>
+
+<audio id="music" src="music.mp3" loop></audio>
+<audio id="shootSound" src="shoot.wav"></audio>
+
+<script type="module">
+  import * as THREE from './three.module.js';
+  import { PointerLockControls } from './PointerLockControls.js';
+
+  let scene, camera, renderer, controls;
+  let clock = new THREE.Clock();
+
+  let player = {
+    hp: 100,
+    speed: 400
+  };
+
+  let bullets = [];
+  let enemies = [];
+  let boss = null;
+  const bossMaxHp = 100;
+
+  let canShoot = true;
+  let shootCooldown = 0.25;
+  let shootTimer = 0;
+
+  let started = false;
+
+  const music = document.getElementById("music");
+  const shootSound = document.getElementById("shootSound");
+  const hpText = document.getElementById("hpText");
+  const bossBar = document.getElementById("bossBar");
+  const bossBarFill = document.getElementById("bossBarFill");
+  const overlay = document.getElementById("overlay");
+  const startBtn = document.getElementById("startBtn");
+
+  let moveForward = false;
+  let moveBackward = false;
+  let moveLeft = false;
+  let moveRight = false;
+
+  init();
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    camera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      1,
+      5000
+    );
+    camera.position.set(0, 20, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    controls = new PointerLockControls(camera, document.body);
+
+    // Sol
+    const floorGeo = new THREE.PlaneGeometry(4000, 4000, 40, 40);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Lumière ambiante
+    scene.add(new THREE.AmbientLight(0x202020));
+
+    // Lampe torche
+    const spot = new THREE.SpotLight(0xffffff, 3, 600, Math.PI / 6, 0.5, 1);
+    spot.castShadow = true;
+    scene.add(spot);
+    scene.add(spot.target);
+
+    // Revolver
+    const gunGeo = new THREE.BoxGeometry(6, 4, 12);
+    const gunMat = new THREE.MeshStandardMaterial({
+      color: 0x888888,
+      metalness: 0.6,
+      roughness: 0.3
+    });
+    const gun = new THREE.Mesh(gunGeo, gunMat);
+    gun.castShadow = true;
+    camera.add(gun);
+    gun.position.set(8, -6, -16);
+    scene.add(camera);
+
+    // Ennemis
+    spawnEnemies();
+
+    // Boss
+    spawnBoss();
+
+    // Lumière lointaine
+    const dirLight = new THREE.DirectionalLight(0x404040, 0.5);
+    dirLight.position.set(200, 400, 100);
+    scene.add(dirLight);
+
+    // Events
+    window.addEventListener("resize", onWindowResize);
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    document.addEventListener("mousedown", onMouseDown);
+
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      if (started) update(dt, spot);
+      render();
+    });
+
+    startBtn.onclick = () => {
+      overlay.style.display = "none";
+      controls.lock();
+      started = true;
+      music.play();
+    };
+  }
+
+  function spawnEnemies() {
+    enemies = [];
+    const geo = new THREE.BoxGeometry(20, 40, 20);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xaa0000 });
+    for (let i = 0; i < 15; i++) {
+      const m = new THREE.Mesh(geo, mat.clone());
+      m.position.set(
+        (Math.random() - 0.5) * 2000,
+        20,
+        (Math.random() - 0.5) * 2000
+      );
+      m.userData = { hp: 3, speed: 40 };
+      scene.add(m);
+      enemies.push(m);
+    }
+  }
+
+  function spawnBoss() {
+    const geo = new THREE.BoxGeometry(60, 100, 60);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x550000,
+      emissive: 0x220000
+    });
+    boss = new THREE.Mesh(geo, mat);
+    boss.position.set(600, 50, 0);
+    boss.userData = { hp: bossMaxHp, speed: 25 };
+    scene.add(boss);
+  }
+
+  function onKeyDown(e) {
+    if (!started) return;
+    if (e.key === "z" || e.key === "Z") moveForward = true;
+    if (e.key === "s" || e.key === "S") moveBackward = true;
+    if (e.key === "q" || e.key === "Q") moveLeft = true;
+    if (e.key === "d" || e.key === "D") moveRight = true;
+  }
+
+  function onKeyUp(e) {
+    if (!started) return;
+    if (e.key === "z" || e.key === "Z") moveForward = false;
+    if (e.key === "s" || e.key === "S") moveBackward = false;
+    if (e.key === "q" || e.key === "Q") moveLeft = false;
+    if (e.key === "d" || e.key === "D") moveRight = false;
+  }
+
+  function onMouseDown(e) {
+    if (!started) return;
+    if (e.button === 0) tryShoot();
+  }
+
+  function tryShoot() {
+    if (!canShoot) return;
+    canShoot = false;
+    shootTimer = shootCooldown;
+
+    shootSound.currentTime = 0;
+    shootSound.play();
+
+    const bulletGeo = new THREE.SphereGeometry(2, 8, 8);
+    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+    bullet.position.copy(camera.position);
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    bullet.userData = { dir: dir.clone(), speed: 900, life: 1.2 };
+    scene.add(bullet);
+    bullets.push(bullet);
+  }
+
+  function update(dt, spot) {
+    // Déplacement
+    const velocity = new THREE.Vector3();
+    if (moveForward) velocity.z -= 1;
+    if (moveBackward) velocity.z += 1;
+    if (moveLeft) velocity.x -= 1;
+    if (moveRight) velocity.x += 1;
+
+    if (velocity.lengthSq() > 0) {
+      velocity.normalize();
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      dir.y = 0;
+      dir.normalize();
+      const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).negate();
+      const move = new THREE.Vector3();
+      move.addScaledVector(dir, velocity.z);
+      move.addScaledVector(right, velocity.x);
+      move.normalize().multiplyScalar(player.speed * dt);
+      controls.getObject().position.add(move);
+    }
+
+    // Limites
+    const pos = controls.getObject().position;
+    pos.y = 20;
+    pos.x = THREE.MathUtils.clamp(pos.x, -1900, 1900);
+    pos.z = THREE.MathUtils.clamp(pos.z, -1900, 1900);
+
+    // Lampe torche
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    spot.position.copy(camera.position);
+    spot.target.position.copy(camera.position.clone().add(dir.multiplyScalar(50)));
+
+    // Cooldown tir
+    if (!canShoot) {
+      shootTimer -= dt;
+      if (shootTimer <= 0) canShoot = true;
+    }
+
+    // Bullets
+    for (let b of bullets) {
+      b.position.addScaledVector(b.userData.dir, b.userData.speed * dt);
+      b.userData.life -= dt;
+    }
+    bullets = bullets.filter(b => {
+      if (b.userData.life <= 0) {
+        scene.remove(b);
+        return false;
+      }
+      return true;
+    });
+
+    // Ennemis
+    for (let m of enemies) {
+      const toPlayer = controls.getObject().position.clone().sub(m.position);
+      toPlayer.y = 0;
+      const d = toPlayer.length();
+      if (d > 5) {
+        toPlayer.normalize();
+        m.position.addScaledVector(toPlayer, m.userData.speed * dt);
+      }
+      if (d < 30) {
+        player.hp -= 10 * dt;
+        if (player.hp <= 0) {
+          player.hp = 0;
+          gameOver();
+        }
+      }
+    }
+
+    // Boss
+    if (boss) {
+      const toPlayer = controls.getObject().position.clone().sub(boss.position);
+      toPlayer.y = 0;
+      const d = toPlayer.length();
+      if (d > 10) {
+        toPlayer.normalize();
+        boss.position.addScaledVector(toPlayer, boss.userData.speed * dt);
+      }
+      if (d < 40) {
+        player.hp -= 20 * dt;
+        if (player.hp <= 0) {
+          player.hp = 0;
+          gameOver();
+        }
+      }
+    }
+
+    // Collisions balles
+    bullets = bullets.filter(b => {
+      let hit = false;
+
+      for (let m of enemies) {
+        if (b.position.distanceTo(m.position) < 20) {
+          m.userData.hp--;
+          hit = true;
+          break;
+        }
+      }
+      enemies = enemies.filter(m => {
+        if (m.userData.hp <= 0) {
+          scene.remove(m);
+          return false;
+        }
+        return true;
+      });
+
+      if (boss && b.position.distanceTo(boss.position) < 40) {
+        boss.userData.hp--;
+        hit = true;
+        if (boss.userData.hp <= 0) {
+          scene.remove(boss);
+          boss = null;
+          bossBar.style.display = "none";
+          checkWin();
+        }
+      }
+
+      if (hit) {
+        scene.remove(b);
+        return false;
+      }
+      return true;
+    });
+
+    // HUD
+    hpText.textContent = Math.max(0, player.hp.toFixed(0));
+    if (boss) {
+      bossBar.style.display = "block";
+      const ratio = boss.userData.hp / bossMaxHp;
+      bossBarFill.style.width = (ratio * 100) + "%";
+    }
+
+    checkWin();
+  }
+
+  function checkWin() {
+    if (!boss && enemies.length === 0 && started) {
+      started = false;
+      alert("Mission réussie !");
+    }
+  }
+
+  function gameOver() {
+    if (!started) return;
+    started = false;
+    alert("Mission échouée");
+  }
+
+  function render() {
+    renderer.render(scene, camera);
+  }
+
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+</script>
+
+</body>
+</html>
